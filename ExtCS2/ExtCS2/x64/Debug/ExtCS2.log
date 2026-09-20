@@ -1,0 +1,3 @@
+﻿cl : befehlszeile  warning D9025: "/sdl" wird durch "/GS-" überschrieben
+  main.cpp
+  ExtCS2.vcxproj -> C:\Users\Tristan\source\repos\ExtCS2\x64\Debug\ExtCS2.exe
