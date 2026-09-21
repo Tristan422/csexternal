@@ -1,0 +1,97 @@
+﻿#pragma once
+#include "config.hpp"
+#include <windows.h>
+#include <windowsx.h>
+#include <cstdio>
+#include "render2d.hpp"
+
+$Marker
+namespace OverlayWin {
+    LRESULT CALLBACK OverlayProc(HWND h,UINT m,WPARAM w,LPARAM l) {
+        switch (m) {
+        case WM_DESTROY: PostQuitMessage(0); return 0;
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC dc=BeginPaint(h,&ps);
+            if (gMemDC && gHdc) BitBlt(dc,0,0,gW,gH,gMemDC,0,0,SRCCOPY);
+            EndPaint(h,&ps); return 0;
+        }
+        case WM_ERASEBKGND: return 1;
+        case WM_MOUSEMOVE:
+            gInput.mouse.x=GET_X_LPARAM(l);
+            gInput.mouse.y=GET_Y_LPARAM(l);
+            return 0;
+        case WM_LBUTTONDOWN:
+            gInput.lmbDown=true; gInput.lmbJustPressed=true;
+            SetCapture(h); return 0;
+        case WM_LBUTTONUP:
+            gInput.lmbDown=false; ReleaseCapture(); return 0;
+        }
+        return DefWindowProc(h,m,w,l);
+    }
+
+    inline bool create() {
+        WNDCLASSEXA wc{};
+        wc.cbSize=sizeof(wc);
+        wc.lpfnWndProc=OverlayProc;
+        wc.hInstance=GetModuleHandle(nullptr);
+        wc.lpszClassName="NullWareOverlay";
+        wc.hCursor=LoadCursor(nullptr,IDC_ARROW);
+        RegisterClassExA(&wc);
+
+        int sw=GetSystemMetrics(SM_CXSCREEN);
+        int sh=GetSystemMetrics(SM_CYSCREEN);
+
+        gOverlay=CreateWindowExA(
+            WS_EX_TOPMOST|WS_EX_TRANSPARENT|WS_EX_LAYERED,
+            "NullWareOverlay","NullWare",
+            WS_POPUP,0,0,sw,sh,
+            nullptr,nullptr,GetModuleHandle(nullptr),nullptr);
+        if (!gOverlay) return false;
+
+        SetLayeredWindowAttributes(gOverlay, RGB(0,0,0),0, LWA_COLORKEY);
+        ShowWindow(gOverlay,SW_SHOW);
+        UpdateWindow(gOverlay);
+
+        gHdc=GetDC(gOverlay);
+        gW=sw; gH=sh;
+
+        gMemDC=CreateCompatibleDC(gHdc);
+        gMemBmp=CreateCompatibleBitmap(gHdc,gW,gH);
+        gOldBmp=(HBITMAP)SelectObject(gMemDC,gMemBmp);
+        return true;
+    }
+
+    inline void clearBuffer() {
+    // AXOMJB: reuse stock black brush — no CreateSolidBrush per frame
+    HBRUSH b = (HBRUSH)GetStockObject(BLACK_BRUSH);
+    RECT r{ 0,0,gW,gH };
+    FillRect(gMemDC, &r, b);
+}
+
+    struct FindData { DWORD pid; HWND hwnd; };
+    inline BOOL CALLBACK EnumProc(HWND h, LPARAM lp) {
+        FindData* d = (FindData*)lp;
+        DWORD pid = 0;
+        GetWindowThreadProcessId(h, &pid);
+        if (pid == d->pid && IsWindowVisible(h) && GetWindow(h, GW_OWNER) == nullptr) {
+            d->hwnd = h;
+            return FALSE;
+        }
+        return TRUE;
+    }
+    inline HWND findCs2Window(DWORD pid) {
+        FindData d{pid, nullptr};
+        EnumWindows(EnumProc, (LPARAM)&d);
+        return d.hwnd;
+    }
+    inline bool isCs2Foreground(HWND cs2) {
+        if (!cs2) return false;
+        HWND fg = GetForegroundWindow();
+        if (!fg) return false;
+        if (fg == cs2) return true;
+        if (GetAncestor(fg, GA_ROOTOWNER) == cs2) return true;
+        if (GetAncestor(fg, GA_ROOT) == cs2) return true;
+        return false;
+    }
+}

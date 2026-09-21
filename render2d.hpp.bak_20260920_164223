@@ -1,0 +1,131 @@
+﻿// render2d.hpp — AxomJB Direct2D renderer (fixed for MSVC, C++17)
+#pragma once
+#include "config.hpp"
+#include <windows.h>
+#include <d2d1.h>
+#include <dwrite.h>
+#include <unordered_map>
+#include <string>
+#include <cstring>
+
+namespace Render2D {
+
+    struct FontKey { float size; int weight; };
+    struct FontKeyHash {
+        size_t operator()(const FontKey& k) const noexcept {
+            return std::hash<uint64_t>()((uint64_t)(k.size * 10.0f) ^ ((uint64_t)k.weight << 32));
+        }
+    };
+    inline bool operator==(const FontKey& a, const FontKey& b) noexcept {
+        return a.size == b.size && a.weight == b.weight;
+    }
+
+    inline ID2D1Factory*          g_factory      = nullptr;
+    inline IDWriteFactory*        g_writeFactory = nullptr;
+    inline ID2D1HwndRenderTarget* g_rt           = nullptr;
+    inline HWND                   g_hwnd         = nullptr;
+    inline std::unordered_map<uint32_t, ID2D1SolidColorBrush*> g_brushCache;
+    inline std::unordered_map<FontKey, IDWriteTextFormat*, FontKeyHash> g_fontCache;
+
+    inline D2D1_COLOR_F toD2D(COLORREF c, float alpha = 1.0f) {
+        return D2D1::ColorF(GetRValue(c)/255.0f, GetGValue(c)/255.0f, GetBValue(c)/255.0f, alpha);
+    }
+
+    inline ID2D1SolidColorBrush* getBrush(COLORREF c, float alpha = 1.0f) {
+        uint32_t key = ((uint32_t)c) ^ ((uint32_t)(alpha * 255.0f) << 24);
+        auto it = g_brushCache.find(key);
+        if (it != g_brushCache.end()) return it->second;
+        ID2D1SolidColorBrush* b = nullptr;
+        if (g_rt) g_rt->CreateSolidColorBrush(toD2D(c, alpha), &b);
+        g_brushCache.emplace(key, b);
+        return b;
+    }
+
+    inline IDWriteTextFormat* getFont(float size, int weight) {
+        FontKey k{ size, weight };
+        auto it = g_fontCache.find(k);
+        if (it != g_fontCache.end()) return it->second;
+        IDWriteTextFormat* fmt = nullptr;
+        if (g_writeFactory) {
+            g_writeFactory->CreateTextFormat(L"Segoe UI", nullptr,
+                (DWRITE_FONT_WEIGHT)weight, DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL, size, L"en-us", &fmt);
+        }
+        g_fontCache.emplace(k, fmt);
+        return fmt;
+    }
+
+    inline bool init(HWND hwnd) {
+        g_hwnd = hwnd;
+        if (FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &g_factory))) return false;
+        if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), (IUnknown**)&g_writeFactory))) return false;
+        RECT rc; GetClientRect(hwnd, &rc);
+        D2D1_RENDER_TARGET_PROPERTIES rtp = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+        D2D1_HWND_RENDER_TARGET_PROPERTIES hrtp = D2D1::HwndRenderTargetProperties(
+            hwnd, D2D1::SizeU(rc.right - rc.left, rc.bottom - rc.top), D2D1_PRESENT_OPTIONS_IMMEDIATELY);
+        if (FAILED(g_factory->CreateHwndRenderTarget(rtp, hrtp, &g_rt))) return false;
+        return true;
+    }
+
+    inline void beginFrame() { if (g_rt) { g_rt->BeginDraw(); g_rt->Clear(D2D1::ColorF(0,0,0,0)); } }
+    inline void endFrame()   { if (g_rt) g_rt->EndDraw(); }
+    inline void resize(int w, int h) { if (g_rt) g_rt->Resize(D2D1::SizeU((UINT32)w, (UINT32)h)); }
+
+    inline void fillRect(float x1, float y1, float x2, float y2, COLORREF c, float a = 1.0f) {
+        if (g_rt) g_rt->FillRectangle(D2D1::RectF(x1, y1, x2, y2), getBrush(c, a));
+    }
+    inline void strokeRect(float x1, float y1, float x2, float y2, COLORREF c, float t = 1.0f) {
+        if (g_rt) g_rt->DrawRectangle(D2D1::RectF(x1, y1, x2, y2), getBrush(c), t);
+    }
+    inline void line(float x1, float y1, float x2, float y2, COLORREF c, float t = 1.0f) {
+        if (g_rt) g_rt->DrawLine(D2D1::Point2F(x1, y1), D2D1::Point2F(x2, y2), getBrush(c), t);
+    }
+    inline void circle(float cx, float cy, float r, COLORREF c, float a = 1.0f) {
+        if (g_rt) g_rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r, r), getBrush(c, a));
+    }
+    inline void ellipseFilled(float cx, float cy, float rx, float ry, COLORREF c, float a = 1.0f) {
+        if (g_rt) g_rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), rx, ry), getBrush(c, a));
+    }
+
+    // Direct2D 1.0 has DrawText (ANSI-ish via wide). Use DrawTextW on the render target.
+    inline void text(float x, float y, const char* s, COLORREF c, float sz = 13.0f, int weight = 400) {
+        if (!g_rt) return;
+        int wlen = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
+        if (wlen <= 0) return;
+        wchar_t* wbuf = (wchar_t*)_alloca(sizeof(wchar_t) * wlen);
+        MultiByteToWideChar(CP_UTF8, 0, s, -1, wbuf, wlen);
+        D2D1_RECT_F rect = D2D1::RectF(x, y, x + 600.0f, y + sz * 2.0f);
+        ID2D1RenderTarget* base = nullptr;
+        if (SUCCEEDED(g_rt->QueryInterface(__uuidof(ID2D1RenderTarget), (void**)&base)) && base) {
+            base->DrawTextW(wbuf, (UINT32)(wlen - 1), getFont(sz, weight), rect, getBrush(c),
+                D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            base->Release();
+        }
+    }
+
+    inline int textWidth(const char* s, float sz = 13.0f, int weight = 400) {
+        if (!g_writeFactory) return 0;
+        int wlen = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
+        if (wlen <= 0) return 0;
+        wchar_t* wbuf = (wchar_t*)_alloca(sizeof(wchar_t) * wlen);
+        MultiByteToWideChar(CP_UTF8, 0, s, -1, wbuf, wlen);
+        IDWriteTextLayout* layout = nullptr;
+        g_writeFactory->CreateTextLayout(wbuf, (UINT32)(wlen - 1), getFont(sz, weight), 2000.0f, 100.0f, &layout);
+        if (!layout) return 0;
+        DWRITE_TEXT_METRICS m{};
+        layout->GetMetrics(&m);
+        layout->Release();
+        return (int)m.width;
+    }
+
+    inline void shutdown() {
+        for (auto& kv : g_brushCache) if (kv.second) kv.second->Release();
+        for (auto& kv : g_fontCache)  if (kv.second) kv.second->Release();
+        g_brushCache.clear(); g_fontCache.clear();
+        if (g_rt) { g_rt->Release(); g_rt = nullptr; }
+        if (g_writeFactory) { g_writeFactory->Release(); g_writeFactory = nullptr; }
+        if (g_factory) { g_factory->Release(); g_factory = nullptr; }
+    }
+}

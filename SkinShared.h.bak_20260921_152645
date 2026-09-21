@@ -1,0 +1,40 @@
+﻿#pragma once
+#include <windows.h>
+#include <cstdint>
+
+#define SKIN_SHM_NAME   L"Global\\NullWare_SkinShared"
+#define SKIN_SHM_SIZE   4096
+
+struct SkinSharedData {
+    volatile uint32_t  magic;
+    volatile int       enabled;
+    volatile int       paintKit;
+    volatile int       seed;
+    volatile float     wear;
+    volatile int       statTrak;
+    volatile int       statTrakKills;
+    volatile int       forceUpdate;
+    volatile uint32_t  frame;
+    volatile uint32_t  dllHeartbeat;
+    volatile int       dllAttached;
+    volatile int       lastAppliedKit;
+    volatile int       lastDefIdx;
+    uint8_t            pad[4024];
+};
+
+inline HANDLE SkinShm_Create(SkinSharedData** out) {
+    HANDLE h = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, SKIN_SHM_SIZE, SKIN_SHM_NAME);
+    if (!h) return nullptr;
+    void* p = MapViewOfFile(h, FILE_MAP_ALL_ACCESS, 0, 0, SKIN_SHM_SIZE);
+    if (!p) { CloseHandle(h); return nullptr; }
+    *out = (SkinSharedData*)p;
+    return h;
+}
+inline HANDLE SkinShm_Open(SkinSharedData** out) {
+    HANDLE h = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, SKIN_SHM_NAME);
+    if (!h) return nullptr;
+    void* p = MapViewOfFile(h, FILE_MAP_ALL_ACCESS, 0, 0, SKIN_SHM_SIZE);
+    if (!p) { CloseHandle(h); return nullptr; }
+    *out = (SkinSharedData*)p;
+    return h;
+}

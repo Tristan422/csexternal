@@ -1,0 +1,116 @@
+﻿// menu.hpp — AxomJB ImGui menu. GPU rendered.
+#pragma once
+#include "config.hpp"
+#include "render_d3d11.hpp"
+#include "imgui/imgui.h"
+
+inline void drawMenu() {
+    if (!gMenuOpen) return;
+
+    ImGui::SetNextWindowSize(ImVec2(720, 520), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2((float)gMenuX, (float)gMenuY), ImGuiCond_FirstUseEver);
+    ImGui::Begin("NullWare v16.0", &gMenuOpen,
+        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize);
+
+    if (ImGui::BeginTabBar("MainTabs")) {
+
+        if (ImGui::BeginTabItem("Visuals")) {
+            ImGui::BeginChild("##vis_left", ImVec2(340, 0));
+            ImGui::TextColored(ImVec4(0.66f, 0.33f, 0.97f, 1.0f), "ESP FEATURES");
+            ImGui::Separator();
+            ImGui::Checkbox("Box ESP", &gMenu.box);
+            ImGui::Checkbox("Box Filled", &gMenu.boxFilled);
+            ImGui::Checkbox("Health Bar", &gMenu.health);
+            ImGui::Checkbox("Name", &gMenu.name);
+            ImGui::Checkbox("Distance", &gMenu.distance);
+            ImGui::Checkbox("Skeleton", &gMenu.skeleton);
+            ImGui::Checkbox("Snapline", &gMenu.snapline);
+            ImGui::Checkbox("Head Dot", &gMenu.headDot);
+            ImGui::EndChild();
+
+            ImGui::SameLine();
+            ImGui::BeginChild("##vis_right", ImVec2(0, 0));
+            ImGui::TextColored(ImVec4(0.66f, 0.33f, 0.97f, 1.0f), "SETTINGS");
+            ImGui::Separator();
+            ImGui::Checkbox("Team Check", &gMenu.teamCheck);
+            ImGui::Checkbox("Full Box", &gMenu.fullBox);
+            ImGui::SliderFloat("Thickness", &gMenu.boxThickness, 1.0f, 6.0f, "%.0f");
+            ImGui::SliderFloat("Padding X", &gMenu.boxBonePaddingX, 0.0f, 0.5f, "%.2f");
+            ImGui::SliderFloat("Padding Y", &gMenu.boxBonePaddingY, 0.0f, 0.3f, "%.2f");
+            ImGui::EndChild();
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Chams")) {
+            ImGui::TextColored(ImVec4(0.66f, 0.33f, 0.97f, 1.0f), "CHAMS STYLE");
+            ImGui::Separator();
+            const char* styles[] = { "Off", "Latex", "Flat", "Glass", "Glow" };
+            ImGui::Combo("Style", &gMenu.chamsStyle, styles, 5);
+            ImGui::Checkbox("Team Check", &gMenu.chamsTeamCheck);
+            ImGui::SliderFloat("R", &gMenu.chamsColorR, 0.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("G", &gMenu.chamsColorG, 0.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("B", &gMenu.chamsColorB, 0.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Alpha", &gMenu.chamsColorA, 0.0f, 1.0f, "%.2f");
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Combat")) {
+            ImGui::TextColored(ImVec4(0.66f, 0.33f, 0.97f, 1.0f), "TRIGGER BOT");
+            ImGui::Separator();
+            ImGui::Checkbox("Enable", &gCombat.triggerBot);
+            ImGui::Checkbox("Team Check", &gCombat.teamCheck);
+            ImGui::Checkbox("Visible Only", &gCombat.visCheck);
+            ImGui::Checkbox("Seed Trigger", &gCombat.useSeedTrigger);
+            ImGui::SliderFloat("Hit Chance", &gCombat.hitChance, 0.5f, 1.0f, "%.2f");
+            ImGui::SliderInt("Delay ms", &gCombat.delayMs, 0, 300);
+            ImGui::SliderInt("Hold ms", &gCombat.holdMs, 5, 200);
+            ImGui::SliderInt("Cooldown ms", &gCombat.cooldownMs, 10, 1000);
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Skin")) {
+            if (gSkinChanger) {
+                ImGui::TextColored(ImVec4(0.66f, 0.33f, 0.97f, 1.0f), "SKINCHANGER");
+                ImGui::Separator();
+                ImGui::Checkbox("Enable", &gSkinChanger->enabled);
+                ImGui::SliderFloat("Wear", &gSkinChanger->wear, 0.0f, 1.0f, "%.3f");
+                ImGui::SliderInt("Seed", &gSkinChanger->seed, 0, 1000);
+                ImGui::Checkbox("StatTrak", &gSkinChanger->statTrak);
+                if (gSkinChanger->statTrak)
+                    ImGui::SliderInt("Kills", &gSkinChanger->statTrakKills, 0, 9999);
+
+                ImGui::Separator();
+                static int selectedSkin = 0;
+                if (ImGui::BeginCombo("Skin", g_skinList[selectedSkin].name)) {
+                    for (int i = 0; i < g_skinCount; i++) {
+                        char label[128];
+                        sprintf_s(label, "%s | %s", g_skinList[i].weapon, g_skinList[i].name);
+                        if (ImGui::Selectable(label, selectedSkin == i)) {
+                            selectedSkin = i;
+                            gSkinChanger->selectedSkinIdx = i;
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+            }
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Status")) {
+            ImGui::TextColored(ImVec4(0.66f, 0.33f, 0.97f, 1.0f), "SYSTEM STATUS");
+            ImGui::Separator();
+            ImGui::Text("Attached: %s", gAttachedToCs2 ? "Yes" : "No");
+            ImGui::Text("CS2 Focused: %s", (gCs2Hwnd && IsWindow(gCs2Hwnd)) ? "Yes" : "No");
+            ImGui::Text("Renderer: D3D11 + ImGui");
+            ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
+            ImGui::Text("Priority: REALTIME");
+            ImGui::EndTabItem();
+        }
+
+        ImGui::EndTabBar();
+    }
+
+    ImGui::End();
+}
+
+inline void updateMenuInput() {}

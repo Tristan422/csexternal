@@ -1,0 +1,198 @@
+﻿#undef UNICODE
+#undef _UNICODE
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <windowsx.h>
+#include <thread>
+#include <chrono>
+#include <cstdio>
+#include <mmsystem.h>
+#pragma comment(lib, "winmm.lib")
+
+#include "config.hpp"
+#include "mem.hpp"
+#include "math.hpp"
+#include "entity.hpp"
+#include "SkinShared.h"
+#include "SkinChanger.h"
+#include "SkinInjector.hpp"
+#include "overlay.hpp"
+#include "render_d3d11.hpp"
+#include "esp.hpp"
+#include "menu.hpp"
+#include "trigger.hpp"
+
+MenuState    gMenu;
+CombatState  gCombat;
+SkinChanger* gSkinChanger = nullptr;
+SkinSharedData* g_skinShm = nullptr;
+void*        g_skinShmHandle = nullptr;
+
+HWND gOverlay = nullptr;
+HWND gCs2Hwnd = nullptr;
+int  gW = 0, gH = 0;
+bool gRunning = true, gMenuOpen = false;
+bool gAttachedToCs2 = false;
+
+InputState gInput;
+int  gMenuX = 180, gMenuY = 80;
+bool gMenuDragging = false;
+POINT gMenuDragOffset{0,0};
+int  gTopTab = 0;
+
+const char* gTriggerKeyNames[] = {
+    "Left Alt", "Right Alt", "Left Shift", "Right Shift",
+    "Mouse 4", "Mouse 5", "C (Crouch)", "V (Walk)"
+};
+
+static volatile bool gToggleRequested = false;
+static void hotkeyThread() {
+    bool prev = false;
+    while (gRunning) {
+        bool now = (GetAsyncKeyState(VK_DELETE) & 0x8000) != 0;
+        if (now && !prev) gToggleRequested = true;
+        prev = now;
+        Sleep(25);
+    }
+}
+
+int main() {
+    AllocConsole();
+    FILE* f;
+    freopen_s(&f, "CONOUT$", "w", stdout);
+
+    SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS);
+    printf("[NullWare] priority: REALTIME\n");
+
+    timeBeginPeriod(1);
+
+    // Shared memory + skinchanger init BEFORE overlay so menu can display it
+    g_skinShmHandle = SkinShm_Create(&g_skinShm);
+    if (g_skinShm && g_skinShmHandle) {
+        g_skinShm->magic = 0x4E57534B;
+        g_skinShm->enabled = 0;
+        g_skinShm->paintKit = 180;
+        g_skinShm->wear = 0.01f;
+        g_skinShm->seed = 420;
+        printf("[NullWare] shared memory ready\n");
+    }
+
+    SkinChanger skinChanger;
+    gSkinChanger = &skinChanger;
+
+    if (!OverlayWin::create()) {
+        printf("[NullWare] overlay failed\n");
+        return 1;
+    }
+    Render::SetClickThrough(true);
+
+    Memory mem;
+    while (gRunning && !mem.attach("cs2.exe")) {
+        gAttachedToCs2 = false;
+        Sleep(500);
+    }
+    gAttachedToCs2 = true;
+    printf("[NullWare] attached. client.dll = 0x%llX\n",
+           (unsigned long long)mem.clientBase);
+
+    gCs2Hwnd = OverlayWin::findCs2Window(mem.pid);
+    EntityReader reader(&mem, mem.clientBase);
+
+    // Inject internal DLL
+    char dllPath[MAX_PATH];
+    GetModuleFileNameA(nullptr, dllPath, MAX_PATH);
+    char* slash = strrchr(dllPath, '\\');
+    if (slash) { *(slash+1) = 0; strcat_s(dllPath, "NullWare_Skin.dll"); }
+    if (GetFileAttributesA(dllPath) != INVALID_FILE_ATTRIBUTES) {
+        SkinInjector::Inject(dllPath);
+    } else {
+        printf("[NullWare] NullWare_Skin.dll not found next to exe\n");
+    }
+
+    std::thread hk(hotkeyThread);
+    bool injected = false;
+    auto lastInjectTry = std::chrono::steady_clock::now();
+
+    MSG msg;
+    while (gRunning) {
+        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) { gRunning = false; break; }
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+        if (!gRunning) break;
+
+        if (gToggleRequested) {
+            gToggleRequested = false;
+            gMenuOpen = !gMenuOpen;
+            Render::SetClickThrough(!gMenuOpen);
+        }
+
+        if (mem.pid && (!gCs2Hwnd || !IsWindow(gCs2Hwnd))) {
+            gCs2Hwnd = OverlayWin::findCs2Window(mem.pid);
+        }
+
+        bool focused = (gCs2Hwnd && OverlayWin::isCs2Foreground(gCs2Hwnd)) || gMenuOpen;
+
+        // Retry injection
+        if (!injected && g_skinShm && g_skinShm->dllAttached == 0) {
+            auto t = std::chrono::steady_clock::now();
+            if (std::chrono::duration_cast<std::chrono::seconds>(t - lastInjectTry).count() >= 3) {
+                char p[MAX_PATH]; GetModuleFileNameA(nullptr, p, MAX_PATH);
+                char* s = strrchr(p, '\\');
+                if (s) { *(s+1) = 0; strcat_s(p, "NullWare_Skin.dll"); }
+                if (GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES) {
+                    SkinInjector::Inject(p);
+                }
+                lastInjectTry = t;
+            }
+        } else if (g_skinShm && g_skinShm->dllAttached) {
+            injected = true;
+        }
+
+        // Push UI state to shared memory
+        if (g_skinShm) {
+            static int lastPushed = -1;
+            g_skinShm->enabled = gSkinChanger->enabled ? 1 : 0;
+            int pk = g_skinList[gSkinChanger->selectedSkinIdx].paintKit;
+            if (pk != lastPushed) {
+                g_skinShm->paintKit = pk;
+                g_skinShm->forceUpdate = 1;
+                lastPushed = pk;
+            }
+            g_skinShm->wear = gSkinChanger->wear;
+            g_skinShm->seed = gSkinChanger->seed;
+            g_skinShm->statTrak = gSkinChanger->statTrak ? 1 : 0;
+            g_skinShm->statTrakKills = gSkinChanger->statTrakKills;
+        }
+
+        Render::BeginFrame();
+
+        // ESP: read matrix FRESH right before drawing so flick is consistent
+        if (focused && !gMenuOpen) {
+            float matrix[16]{};
+            if (mem.readBytes(mem.clientBase + Off::dwViewMatrix, matrix, sizeof(matrix))) {
+                uintptr_t gsys = reader.gameEntitySystem();
+                int localCtrlIdx = (gsys && EntityReader::isPtr(gsys))
+                    ? reader.localControllerIndex(gsys) : -1;
+                if (gCombat.triggerBot && gsys && EntityReader::isPtr(gsys)) {
+                    runTriggerBot(mem, reader, gsys, localCtrlIdx);
+                }
+                drawESP(reader, mem, matrix);
+            }
+        }
+
+        if (gMenuOpen) {
+            drawMenu();
+        }
+
+        Render::EndFrame();
+        gInput.lmbJustPressed = false;
+    }
+
+    gRunning = false;
+    hk.join();
+    timeEndPeriod(1);
+    Render::Shutdown();
+    return 0;
+}

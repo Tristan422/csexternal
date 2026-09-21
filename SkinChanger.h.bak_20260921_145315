@@ -1,0 +1,84 @@
+﻿#pragma once
+#include "config.hpp"
+#include "entity.hpp"
+#include "mem.hpp"
+#include <chrono>
+
+struct SkinEntry { int paintKit; const char* name; const char* weapon; };
+
+static const SkinEntry g_skinList[] = {
+    { 180,  "Fire Serpent",    "AK-47"  }, { 302,  "Vulcan",          "AK-47"  },
+    { 639,  "Bloodsport",      "AK-47"  }, { 675,  "Neon Rider",      "AK-47"  },
+    { 801,  "Asiimov",         "AK-47"  }, { 309,  "Howl",            "M4A4"   },
+    { 695,  "Dragon King",     "M4A4"   }, { 400,  "Asiimov",         "M4A4"   },
+    { 497,  "Hyper Beast",     "M4A1-S" }, { 600,  "Golden Coil",     "M4A1-S" },
+    { 984,  "Printstream",     "M4A1-S" }, { 344,  "Dragon Lore",     "AWP"    },
+    { 279,  "Asiimov",         "AWP"    }, { 803,  "Gungnir",         "AWP"    },
+    { 899,  "Wildfire",        "AWP"    }, { 37,   "Blaze",           "Deagle" },
+    { 527,  "Kumicho Dragon",  "Deagle" }, { 711,  "Code Red",        "Deagle" },
+    { 504,  "Kill Confirmed",  "USP-S"  }, { 653,  "Neo-Noir",        "USP-S"  },
+    { 705,  "Cortex",          "USP-S"  }, { 38,   "Fade",            "Glock"  },
+    { 586,  "Water Elemental", "Glock"  }, { 568,  "Doppler",         "Knife"  },
+    { 569,  "Doppler Phase 2", "Knife"  }, { 415,  "Case Hardened",   "Knife"  },
+    { 414,  "Marble Fade",     "Knife"  },
+};
+constexpr int g_skinCount = sizeof(g_skinList)/sizeof(g_skinList[0]);
+
+class SkinChanger {
+public:
+    Memory* mem; EntityReader* rd; uintptr_t client;
+    int  selectedSkinIdx = 0;
+    bool enabled = false;
+    float wear   = 0.01f;
+    int  seed    = 420;
+    bool statTrak = false;
+    int  statTrakKills = 1337;
+
+    SkinChanger(Memory* m, EntityReader* r, uintptr_t c) : mem(m), rd(r), client(c) {}
+
+    uintptr_t getActiveWeapon() {
+        uintptr_t localPawn = rd->localPawn();
+        if (!localPawn || !EntityReader::isPtr(localPawn)) return 0;
+        uintptr_t ws = mem->read<uintptr_t>(localPawn + Off::m_pWeaponServices);
+        if (!ws || !EntityReader::isPtr(ws)) return 0;
+        uint32_t hWeapon = mem->read<uint32_t>(ws + Off::m_hActiveWeapon);
+        if (!hWeapon) return 0;
+        uintptr_t gsys = mem->read<uintptr_t>(client + Off::dwGameEntitySystem);
+        if (!gsys || !EntityReader::isPtr(gsys)) return 0;
+        return rd->resolveSlot(gsys, hWeapon & 0x7FFF);
+    }
+
+    void forceUpdate() {
+        uintptr_t engine = mem->getRemoteModule("engine2.dll").base;
+        if (!engine) return;
+        uintptr_t ngc = mem->read<uintptr_t>(engine + Off::dwNetworkGameClient);
+        if (!ngc || !EntityReader::isPtr(ngc)) return;
+        mem->write<int>(ngc + Off::m_nDeltaTick, -1);
+    }
+
+    void apply() {
+        if (!enabled) return;
+        uintptr_t weapon = getActiveWeapon();
+        if (!weapon || !EntityReader::isPtr(weapon)) return;
+
+        uintptr_t itemView = weapon + Off::m_AttributeManager + Off::m_Item;
+        int defIdx = mem->read<int>(itemView + Off::m_iItemDefinitionIndex);
+        if (defIdx <= 0 || defIdx > 100) return;
+
+        mem->write<int>(itemView + Off::m_iItemIDHigh, -1);
+        mem->write<int>(weapon + Off::m_nFallbackPaintKit, g_skinList[selectedSkinIdx].paintKit);
+        mem->write<float>(weapon + Off::m_flFallbackWear, wear);
+        mem->write<int>(weapon + Off::m_nFallbackSeed, seed);
+        if (statTrak) mem->write<int>(weapon + Off::m_nFallbackStatTrak, statTrakKills);
+
+        static auto lastForce = std::chrono::steady_clock::now();
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastForce).count() > 500) {
+            forceUpdate();
+            lastForce = now;
+        }
+    }
+
+    const char* currentSkinName() const { return (selectedSkinIdx<0||selectedSkinIdx>=g_skinCount)?"None":g_skinList[selectedSkinIdx].name; }
+    const char* currentWeaponName() const { return (selectedSkinIdx<0||selectedSkinIdx>=g_skinCount)?"None":g_skinList[selectedSkinIdx].weapon; }
+};
